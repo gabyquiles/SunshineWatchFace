@@ -14,13 +14,15 @@
  * limitations under the License.
  */
 
-package com.gabyquiles.watchface;
+package com.example.android.sunshine.app;
 
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.res.Resources;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Paint;
@@ -30,16 +32,33 @@ import android.graphics.Typeface;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Message;
+import android.support.annotation.NonNull;
+import android.support.annotation.Nullable;
 import android.support.wearable.watchface.CanvasWatchFaceService;
 import android.support.wearable.watchface.WatchFaceStyle;
+import android.util.Log;
 import android.view.Display;
 import android.view.LayoutInflater;
 import android.view.SurfaceHolder;
 import android.view.View;
 import android.view.WindowInsets;
 import android.view.WindowManager;
+import android.widget.ImageView;
 import android.widget.TextView;
 
+import com.google.android.gms.common.ConnectionResult;
+import com.google.android.gms.common.api.GoogleApiClient;
+import com.google.android.gms.common.api.ResultCallback;
+import com.google.android.gms.wearable.Asset;
+import com.google.android.gms.wearable.DataApi;
+import com.google.android.gms.wearable.DataEvent;
+import com.google.android.gms.wearable.DataEventBuffer;
+import com.google.android.gms.wearable.DataItem;
+import com.google.android.gms.wearable.DataMap;
+import com.google.android.gms.wearable.DataMapItem;
+import com.google.android.gms.wearable.Wearable;
+
+import java.io.InputStream;
 import java.lang.ref.WeakReference;
 import java.text.SimpleDateFormat;
 import java.util.Calendar;
@@ -52,9 +71,16 @@ import java.util.concurrent.TimeUnit;
  * Digital watch face with seconds. In ambient mode, the seconds aren't displayed. On devices with
  * low-bit ambient mode, the text is drawn without anti-aliasing in ambient mode.
  */
-public class SunshineWatchFace extends CanvasWatchFaceService {
+public class SunshineWatchFace extends CanvasWatchFaceService
+        implements GoogleApiClient.ConnectionCallbacks, GoogleApiClient.OnConnectionFailedListener,
+        DataApi.DataListener, ResultCallback<DataApi.GetFdForAssetResult> {
+    private static final String LOG_TAG = SunshineWatchFace.class.getCanonicalName();
     private static final Typeface NORMAL_TYPEFACE =
             Typeface.create(Typeface.SANS_SERIF, Typeface.NORMAL);
+
+    private final String WATCHFACE_MAX_TEMP = "max_temp";
+    private final String WATCHFACE_MIN_TEMP = "min_temp";
+    private final String WATCHFACE_CONDITIONS = "conditions";
 
     /**
      * Update rate in milliseconds for interactive mode. We update once a second since seconds are
@@ -67,8 +93,22 @@ public class SunshineWatchFace extends CanvasWatchFaceService {
      */
     private static final int MSG_UPDATE_TIME = 0;
 
+
+    int mHighTemp;
+    int mLowTemp;
+    Bitmap mIcon;
+
+    GoogleApiClient mGoogleApiClient;
+
     @Override
     public Engine onCreateEngine() {
+Log.v(LOG_TAG, "OnCreateEngine");
+        mGoogleApiClient = new GoogleApiClient.Builder(SunshineWatchFace.this)
+                .addConnectionCallbacks(this)
+                .addOnConnectionFailedListener(this)
+                .addApi(Wearable.API)
+                .build();
+
         return new Engine();
     }
 
@@ -92,6 +132,48 @@ public class SunshineWatchFace extends CanvasWatchFaceService {
         }
     }
 
+
+    @Override
+    public void onConnected(@Nullable Bundle bundle) {
+        Wearable.DataApi.addListener(mGoogleApiClient, this);
+        Log.v(LOG_TAG, "Connected");
+    }
+
+    @Override
+    public void onConnectionSuspended(int i) {
+        Log.d(LOG_TAG, "Connection Suspended");
+    }
+
+    @Override
+    public void onDataChanged(DataEventBuffer dataEventBuffer) {
+        for(DataEvent dataEvent : dataEventBuffer) {
+            if(dataEvent.getType() == DataEvent.TYPE_CHANGED) {
+                DataItem item = dataEvent.getDataItem();
+
+                DataMap map = DataMapItem.fromDataItem(item).getDataMap();
+                mLowTemp = map.getInt(WATCHFACE_MIN_TEMP);
+                mHighTemp = map.getInt(WATCHFACE_MAX_TEMP);
+                Asset asset = map.getAsset(WATCHFACE_CONDITIONS);
+
+                Wearable.DataApi.getFdForAsset(mGoogleApiClient, asset).setResultCallback(this);
+                Log.d(LOG_TAG, "Data received: min="+mLowTemp + " max="+mHighTemp );
+            }
+        }
+        Log.v(LOG_TAG, "Data Changed");
+    }
+
+    @Override
+    public void onConnectionFailed(@NonNull ConnectionResult connectionResult) {
+        Log.d(LOG_TAG, "Connection Failed");
+    }
+
+    @Override
+    public void onResult(@NonNull DataApi.GetFdForAssetResult getFdForAssetResult) {
+        InputStream stream = getFdForAssetResult.getInputStream();
+        mIcon = BitmapFactory.decodeStream(stream);
+        Log.v(LOG_TAG, "On Result");
+    }
+
     private class Engine extends CanvasWatchFaceService.Engine {
         final Handler mUpdateTimeHandler = new EngineHandler(this);
         boolean mRegisteredTimeZoneReceiver = false;
@@ -100,8 +182,7 @@ public class SunshineWatchFace extends CanvasWatchFaceService {
         boolean mAmbient;
         Calendar mCalendar;
         Date mDate;
-        int mHighTemp;
-        int mLowTemp;
+
         final BroadcastReceiver mDataReceiver = new BroadcastReceiver() {
             @Override
             public void onReceive(Context context, Intent intent) {
@@ -122,7 +203,7 @@ public class SunshineWatchFace extends CanvasWatchFaceService {
         TextView mDateView;
         TextView mHighView;
         TextView mLowView;
-
+        ImageView mIconView;
 
         /**
          * Whether the display supports fewer bits for each color in ambient mode. When true, we
@@ -151,6 +232,7 @@ public class SunshineWatchFace extends CanvasWatchFaceService {
 
             mBackgroundPaint = new Paint();
             mBackgroundPaint.setColor(resources.getColor(R.color.primary));
+            mTextPaint = createTextPaint(R.color.primary_text);
 
             LayoutInflater inflater = (LayoutInflater) getSystemService(Context.LAYOUT_INFLATER_SERVICE);
             mRootView = inflater.inflate(R.layout.watchface, null);
@@ -159,6 +241,7 @@ public class SunshineWatchFace extends CanvasWatchFaceService {
             mDateView = (TextView) mRootView.findViewById(R.id.dateTextView);
             mHighView = (TextView) mRootView.findViewById(R.id.maxTempTextView);
             mLowView = (TextView) mRootView.findViewById(R.id.minTempTextView);
+            mIconView = (ImageView) mRootView.findViewById(R.id.iconImageView);
 
 
             mTimeView.setLayerPaint(mTextPaint);
@@ -178,11 +261,6 @@ public class SunshineWatchFace extends CanvasWatchFaceService {
             mCalendar = Calendar.getInstance();
             mDate = new Date();
             initFormats();
-
-//            TODO: Remove these
-            mHighTemp = 25;
-            mLowTemp = 16;
-
         }
 
         @Override
@@ -191,11 +269,22 @@ public class SunshineWatchFace extends CanvasWatchFaceService {
             super.onDestroy();
         }
 
+        private Paint createTextPaint(int textColor) {
+            Paint paint = new Paint();
+            paint.setColor(textColor);
+            paint.setTypeface(NORMAL_TYPEFACE);
+            paint.setAntiAlias(true);
+            return paint;
+        }
+
         @Override
         public void onVisibilityChanged(boolean visible) {
             super.onVisibilityChanged(visible);
+            Log.v(LOG_TAG, "Visibility Changed");
 
             if (visible) {
+                // Connect to phone if not visible
+                mGoogleApiClient.connect();
                 registerReceiver();
 
                 // Update time zone in case it changed while we weren't visible.
@@ -203,6 +292,10 @@ public class SunshineWatchFace extends CanvasWatchFaceService {
                 mCalendar.setTimeInMillis(now);
             } else {
                 unregisterReceiver();
+                // Disconnect from phone if it is in ambient mode
+                if(mGoogleApiClient != null && mGoogleApiClient.isConnected()) {
+                    mGoogleApiClient.disconnect();
+                }
             }
 
             // Whether the timer should be running depends on whether we're visible (as well as
@@ -274,6 +367,7 @@ public class SunshineWatchFace extends CanvasWatchFaceService {
          */
         @Override
         public void onTapCommand(int tapType, int x, int y, long eventTime) {
+            mGoogleApiClient.connect();
             Resources resources = SunshineWatchFace.this.getResources();
             switch (tapType) {
                 case TAP_TYPE_TOUCH:
@@ -334,6 +428,7 @@ public class SunshineWatchFace extends CanvasWatchFaceService {
             mHighView.setTextSize(mStandardSize);
             mLowView.setText(lowString);
             mLowView.setTextSize(mStandardSize);
+            mIconView.setImageBitmap(mIcon);
 
 
             //This is necessary to be able to use xml layout file

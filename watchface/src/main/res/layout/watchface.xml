@@ -21,8 +21,9 @@
         android:gravity="center"
         android:orientation="horizontal">
         <ImageView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content" />
+            android:id="@+id/iconImageView"
+            android:layout_width="@dimen/icon_size"
+            android:layout_height="@dimen/icon_size" />
         <TextView
             android:id="@+id/maxTempTextView"
             android:layout_width="wrap_content"
